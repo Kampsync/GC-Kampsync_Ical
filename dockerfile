@@ -1,20 +1,18 @@
-# Use Node.js 18 base image
-FROM node:18-slim
+# Use official Node.js LTS image
+FROM node:20
 
-# Create app directory
+# Set working directory
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json (if exists)
+# Copy and install dependencies
 COPY package*.json ./
-
-# Install app dependencies
 RUN npm install
 
-# Copy the rest of the application
+# Copy source code
 COPY . .
 
-# Expose the port the app runs on
+# Expose port for Cloud Run
 EXPOSE 8080
 
-# Start the service
-CMD ["node", "index.js"]
+# Start the app
+CMD ["npm", "start"]

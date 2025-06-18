@@ -1,34 +1,68 @@
-const express = require('express');
-const axios = require('axios');
-const crypto = require('crypto');
+import express from 'express';
+import { v4 as uuidv4 } from 'uuid';
+import fetch from 'node-fetch';
 
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 8080;
 
-app.post('/generate-ical-link', async (req, res) => {
+app.use(express.json());
+
+// Replace this with your actual Xano endpoint
+const XANO_UPDATE_TOKEN_URL = 'https://xano.example.com/api:update_ical_token';
+
+// Step 1: Generate a new iCal token and save it to Xano
+app.get('/generate-ical/:listingId', async (req, res) => {
+  const { listingId } = req.params;
+  const token = uuidv4();
+
   try {
-    const { listing_id } = req.body;
-    if (!listing_id) return res.status(400).json({ error: 'Missing listing_id' });
-
-    // Generate a secure token
-    const token = crypto.randomBytes(8).toString('hex'); // Example: a1b2c3d4e5f6g7h8
-
-    // Construct the public iCal link
-    const icalLink = `https://www.kampsync.com/${token}.ics`;
-
-    // Send to Xano
-    await axios.post('https://xfxa-cldj-sxth.n7e.xano.io/api:yHTBBmYY/save_kampsync_ical', {
-      listing_id,
-      ical_token: token
+    const response = await fetch(XANO_UPDATE_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        listing_id: listingId,
+        kampsync_token: token
+      })
     });
 
-    return res.json({ success: true, token, ical_link: icalLink });
-  } catch (err) {
-    console.error('Error generating link:', err);
-    return res.status(500).json({ error: 'Internal error', details: err.message });
+    if (!response.ok) {
+      throw new Error(`Xano returned status ${response.status}`);
+    }
+
+    const icalLink = `https://www.kampsync.com/${token}.ics`;
+
+    return res.json({
+      success: true,
+      listingId,
+      token,
+      icalLink
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to save token to Xano',
+      details: error.message
+    });
   }
 });
 
-app.listen(PORT, () => console.log(`iCal generator running on port ${PORT}`));
+// Step 2: Serve a placeholder .ics file for any incoming token
+app.get('/:token.ics', async (req, res) => {
+  const { token } = req.params;
+
+  // Later: verify token with Xano and pull booking data
+  res.setHeader('Content-Type', 'text/calendar');
+  res.send(`BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//KampSync//EN
+BEGIN:VEVENT
+SUMMARY:Sample KampSync Booking
+DTSTART:20250620T140000Z
+DTEND:20250620T150000Z
+END:VEVENT
+END:VCALENDAR`);
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
+});

@@ -1,98 +1,51 @@
-import express from 'express';
-import fetch from 'node-fetch';
-import crypto from 'crypto';
+import os
+import uuid
+import requests
+from flask import Flask, request, jsonify
 
-const app = express();
-const PORT = process.env.PORT || 8080;
-app.use(express.json());
+app = Flask(__name__)
 
-// Xano API config (replace with your actual base URL + auth)
-const XANO_BASE_URL = 'https://xano.yourdomain.com/api:listings';
-const XANO_API_KEY = 'YOUR_XANO_API_KEY'; // use bearer token if needed
+XANO_API_GET_BASE = os.environ.get("XANO_API_GET_BASE")
+XANO_API_PATCH_BASE = os.environ.get("XANO_API_PATCH_BASE")
 
-// Generate token and save to Xano
-app.post('/generate', async (req, res) => {
-  const { listing_id } = req.body;
-  if (!listing_id) return res.status(400).json({ error: 'Missing listing_id' });
+@app.route("/generate-ical", methods=["POST"])
+def generate_ical_link():
+    data = request.get_json(silent=True) or request.form
+    if not data or "listing_id" not in data:
+        return jsonify({"error": "Missing 'listing_id' in request body"}), 400
 
-  // Generate secure token
-  const token = crypto.randomBytes(12).toString('hex');
+    listing_id = data["listing_id"]
 
-  // Save to Xano
-  try {
-    const xanoResponse = await fetch(`${XANO_BASE_URL}/${listing_id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${XANO_API_KEY}`
-      },
-      body: JSON.stringify({ kampsync_ical_link: `https://www.kampsync.com/${token}.ics` })
-    });
+    try:
+        # GET listing from Xano
+        get_response = requests.get(f"{XANO_API_GET_BASE}{listing_id}")
+        get_response.raise_for_status()
+        record = get_response.json()
 
-    if (!xanoResponse.ok) throw new Error(`Xano error: ${xanoResponse.status}`);
+        if isinstance(record, list):
+            record = record[0] if record else {}
 
-    // Optionally log success
-    console.log(`✔ Token ${token} saved for listing ${listing_id}`);
+        existing_link = record.get("kampsync_ical_link") if isinstance(record, dict) else None
 
-    res.json({
-      token,
-      ical_link: `https://www.kampsync.com/${token}.ics`
-    });
+        # If already exists, return it
+        if existing_link and isinstance(existing_link, str):
+            return jsonify({"kampsync_ical_link": existing_link})
 
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to save token to Xano', details: err.message });
-  }
-});
+        # Otherwise, generate permanent new link
+        unique_token = str(uuid.uuid4())
+        new_ical_url = f"https://api.kampsync.com/v1/ical/{unique_token}"
 
-// Serve .ics calendar by token
-app.get('/:token.ics', async (req, res) => {
-  const token = req.params.token;
+        # PATCH Xano to save it
+        patch_response = requests.patch(
+            f"{XANO_API_PATCH_BASE}{listing_id}",
+            json={"kampsync_ical_link": new_ical_url}
+        )
+        patch_response.raise_for_status()
 
-  // Look up listing in Xano by matching token
-  try {
-    const listingsRes = await fetch(`${XANO_BASE_URL}?kampsync_ical_link=eq.https://www.kampsync.com/${token}.ics`, {
-      headers: { Authorization: `Bearer ${XANO_API_KEY}` }
-    });
+        return jsonify({"kampsync_ical_link": new_ical_url})
 
-    const listings = await listingsRes.json();
-    if (!listings.length) return res.status(404).send('Listing not found');
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": str(e)}), 500
 
-    const listing = listings[0];
-    const listing_id = listing.id;
-
-    // Fetch bookings by listing ID
-    const bookingsRes = await fetch(`https://xano.yourdomain.com/api:booking_events?listing_id=${listing_id}`);
-    const bookings = await bookingsRes.json();
-
-    // Build ICS calendar
-    const events = bookings.map(booking => {
-      const start = new Date(booking.start).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      const end = new Date(booking.end).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-      const summary = booking.summary || 'KampSync Booking';
-      const uid = booking.uid || `${listing_id}-${start}`;
-
-      return `BEGIN:VEVENT
-SUMMARY:${summary}
-UID:${uid}
-DTSTART:${start}
-DTEND:${end}
-END:VEVENT`;
-    }).join('\n');
-
-    const ical = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//KampSync//EN
-${events}
-END:VCALENDAR`;
-
-    res.setHeader('Content-Type', 'text/calendar');
-    res.send(ical);
-
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to generate .ics', details: err.message });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`✅ KampSync .ics service running on port ${PORT}`);
-});
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
